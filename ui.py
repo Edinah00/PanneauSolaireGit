@@ -512,6 +512,7 @@ class ApplicationSolaire(ctk.CTk):
             return "Energie dispo estimée: disponible apres un calcul."
 
         try:
+            from controleur import convertir_nombre
             pourcentage = convertir_nombre(
                 self.entree_pourcentage_panneau.get(), "Pourcentage"
             ) / 100
@@ -545,6 +546,7 @@ class ApplicationSolaire(ctk.CTk):
             return "Revente estimée: lance d'abord un calcul du dimensionnement."
 
         try:
+            from controleur import convertir_nombre
             rendement = convertir_nombre(
                 self.entree_rendement_revente.get(), "Rendement panneau"
             ) / 100
@@ -674,8 +676,6 @@ class ApplicationSolaire(ctk.CTk):
         self.entree_heure_debut.delete(0, "end")
         self.entree_heure_fin.delete(0, "end")
         self.actualiser_liste_appareils()
-        self._dernier_resultat_vente = None
-        self._afficher_revente_vide()
         self._dernier_resultat_vente = None
         self._afficher_revente_vide()
 
@@ -836,13 +836,19 @@ class ApplicationSolaire(ctk.CTk):
                     self._derniere_puissance_requise,
                     parametres_calcul,
                 )
+                # Nombre réel (sans arrondi) pour l'affichage
+                nombre_reel = self.controleur.calculer_nombre_panneaux_reel(
+                    meilleur_panneau, self._derniere_puissance_requise
+                )
                 self._afficher_meilleur_panneau(
                     meilleur_panneau,
                     puissance_theorique,
                     puissance_pratique,
                     prix_total,
                     nombre_panneaux,
+                    nombre_reel,
                 )
+                # La revente utilise maintenant le nombre réel en interne
                 resultat_vente = self.controleur.calculer_revente_surplus(
                     meilleur_panneau,
                     self._derniere_puissance_requise,
@@ -943,10 +949,13 @@ class ApplicationSolaire(ctk.CTk):
                 self._derniere_puissance_requise,
                 parametres,
             )
+            nombre_reel = self.controleur.calculer_nombre_panneaux_reel(
+                panneau, self._derniere_puissance_requise
+            )
             calculs = (
                 f"P. theorique: {formater_nombre(puissance_theorique)} W | "
                 f"P. pratique: {formater_nombre(puissance_pratique)} W | "
-                f"Nb de panneaux: {nombre_panneaux} | "
+                f"Nb panneaux: {nombre_panneaux} (réel: {nombre_reel:.2f}) | "
                 f"Prix: {formater_nombre(prix_total)} €"
             )
             etiquette_calculs = ctk.CTkLabel(
@@ -965,6 +974,7 @@ class ApplicationSolaire(ctk.CTk):
         puissance_pratique: float,
         prix_total: float,
         nombre_panneaux: int,
+        nombre_reel: float = 0.0,
     ) -> None:
         if hasattr(self, '_cadre_meilleur_panneau'):
             self._cadre_meilleur_panneau.destroy()
@@ -985,11 +995,16 @@ class ApplicationSolaire(ctk.CTk):
         )
         titre.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
 
+        # Afficher le nombre réel si disponible et différent de l'arrondi
+        ligne_nb = f"Nombre de panneaux: {nombre_panneaux}"
+        if nombre_reel > 0 and abs(nombre_reel - nombre_panneaux) > 0.001:
+            ligne_nb += f" (réel: {nombre_reel:.2f} → arrondi à {nombre_panneaux})"
+
         details = (
             f"Nom: {panneau.nom}\n"
             f"Puissance theorique: {formater_nombre(puissance_theorique)} W\n"
             f"Puissance pratique: {formater_nombre(puissance_pratique)} W\n"
-            f"Nombre de panneaux: {nombre_panneaux}\n"
+            f"{ligne_nb}\n"
             f"Prix total: {formater_nombre(prix_total)} €"
         )
         etiquette_details = ctk.CTkLabel(
@@ -1023,7 +1038,6 @@ class ApplicationSolaire(ctk.CTk):
         parametres: ParametresTranches,
         message: str,
     ) -> None:
-        # Stocker la puissance requise pour les panneaux
         self._derniere_puissance_requise = resultat.puissance_panneau_theorique_w
 
         self.resume_resultats.configure(
@@ -1042,50 +1056,32 @@ class ApplicationSolaire(ctk.CTk):
         tableau.grid_columnconfigure(1, weight=1, uniform="resultats")
 
         self._creer_tuile_resultat_compacte(
-            tableau,
-            0,
-            0,
-            "Batterie theorique",
+            tableau, 0, 0, "Batterie theorique",
             f"{formater_nombre(resultat.batterie_theorique_wh)} Wh",
             self.couleurs_resultats["success"],
         )
         self._creer_tuile_resultat_compacte(
-            tableau,
-            0,
-            1,
-            "Batterie pratique",
+            tableau, 0, 1, "Batterie pratique",
             f"{formater_nombre(resultat.batterie_pratique_wh)} Wh",
             "#14532d",
         )
         self._creer_tuile_resultat_compacte(
-            tableau,
-            1,
-            0,
-            "Panneau theorique",
+            tableau, 1, 0, "Panneau theorique",
             f"{formater_nombre(resultat.puissance_panneau_theorique_w)} W",
             self.couleurs_resultats["warning"],
         )
         self._creer_tuile_resultat_compacte(
-            tableau,
-            1,
-            1,
-            "Panneau rendement haut",
+            tableau, 1, 1, "Panneau rendement haut",
             f"{formater_nombre(resultat.puissance_panneau_rendement_haut_w)} W",
             self.couleurs_resultats["accent"],
         )
         self._creer_tuile_resultat_compacte(
-            tableau,
-            2,
-            0,
-            "Convertisseur",
+            tableau, 2, 0, "Convertisseur",
             f"{formater_nombre(resultat.puissance_convertisseur_w)} W",
             "#7c3aed",
         )
         self._creer_tuile_resultat_compacte(
-            tableau,
-            2,
-            1,
-            "SQL / Etat",
+            tableau, 2, 1, "SQL / Etat",
             message,
             "#64748b",
             petite_valeur=True,
@@ -1097,9 +1093,7 @@ class ApplicationSolaire(ctk.CTk):
         cartes.grid_columnconfigure(1, weight=1, uniform="cartes")
 
         self._creer_carte_resultat(
-            cartes,
-            0,
-            "Energie par tranche",
+            cartes, 0, "Energie par tranche",
             self.couleurs_resultats["accent_2"],
             [
                 ("Matin", f"{formater_nombre(resultat.energie_matin_wh)} Wh"),
@@ -1108,9 +1102,7 @@ class ApplicationSolaire(ctk.CTk):
             ],
         )
         self._creer_carte_resultat(
-            cartes,
-            1,
-            "Batterie / Pointe",
+            cartes, 1, "Batterie / Pointe",
             self.couleurs_resultats["success"],
             [
                 ("Charge batterie", f"{formater_nombre(resultat.puissance_charge_batterie_w)} W"),
@@ -1125,9 +1117,7 @@ class ApplicationSolaire(ctk.CTk):
         infos.grid_columnconfigure(1, weight=1, uniform="infos")
 
         self._creer_carte_resultat(
-            infos,
-            0,
-            "Parametres utilises",
+            infos, 0, "Parametres utilises",
             "#8b5cf6",
             [
                 ("Matin", f"{parametres.matin_debut}h -> {parametres.matin_fin}h"),
@@ -1136,9 +1126,7 @@ class ApplicationSolaire(ctk.CTk):
             ],
         )
         self._creer_carte_resultat(
-            infos,
-            1,
-            "Lecture rapide",
+            infos, 1, "Lecture rapide",
             "#0f766e",
             [
                 ("1", "La batterie de nuit fixe le besoin principal."),
@@ -1218,11 +1206,24 @@ class ApplicationSolaire(ctk.CTk):
         carte.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
         carte.grid_columnconfigure(0, weight=1)
 
+        # Construire le résumé : la puissance affichée est celle des panneaux achetés (arrondi)
+        details = resultat.details
+        ligne_nb_reel = ""
+        if "nombre_panneaux_reel" in details and details["nombre_panneaux_reel"] > 0:
+            nb_reel = details["nombre_panneaux_reel"]
+            nb_arrondi = details.get("nombre_panneaux_arrondi", 0)
+            ligne_nb_reel = (
+                f"\nNb panneaux réel: {nb_reel:.2f} → arrondi à {nb_arrondi} achetés"
+                f" (surplus sur puissance des {nb_arrondi} panneaux)"
+            )
+
         resume = ctk.CTkLabel(
             carte,
             text=(
                 f"Panneau retenu: {resultat.nom_panneau}\n"
-                f"Puissance théorique: {formater_nombre(resultat.puissance_panneau_theorique_w)} W\n"
+                f"Puissance théorique installée ({details.get('nombre_panneaux_arrondi', '?')} panneaux): "
+                f"{formater_nombre(resultat.puissance_panneau_theorique_w)} W"
+                f"{ligne_nb_reel}\n"
                 f"Energie non utilisée: {formater_nombre(resultat.energie_non_utilisee_wh)} Wh"
             ),
             justify="left",
@@ -1262,51 +1263,8 @@ class ApplicationSolaire(ctk.CTk):
             ligne = index // 2
             colonne = index % 2
             self._creer_tuile_resultat_compacte(
-                grille,
-                ligne,
-                colonne,
-                titre,
-                valeur,
-                couleur,
-                petite_valeur=True,
+                grille, ligne, colonne, titre, valeur, couleur, petite_valeur=True,
             )
-
-    def _creer_bandeau_resultat(
-        self,
-        ligne: int,
-        titre: str,
-        valeur: str,
-        description: str,
-        couleur: str,
-    ) -> None:
-        cadre = ctk.CTkFrame(
-            self.zone_resultats,
-            corner_radius=18,
-            fg_color=couleur,
-        )
-        cadre.grid(row=ligne, column=0, sticky="ew", padx=4, pady=(4, 10))
-        cadre.grid_columnconfigure(0, weight=1)
-
-        etiquette_titre = ctk.CTkLabel(
-            cadre,
-            text=titre,
-            font=ctk.CTkFont(size=16, weight="bold"),
-        )
-        etiquette_titre.grid(row=0, column=0, sticky="w", padx=18, pady=(16, 4))
-
-        etiquette_valeur = ctk.CTkLabel(
-            cadre,
-            text=valeur,
-            font=ctk.CTkFont(size=30, weight="bold"),
-        )
-        etiquette_valeur.grid(row=1, column=0, sticky="w", padx=18, pady=4)
-
-        etiquette_desc = ctk.CTkLabel(
-            cadre,
-            text=description,
-            justify="left",
-        )
-        etiquette_desc.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 16))
 
     def _creer_tuile_resultat_compacte(
         self,
@@ -1323,18 +1281,14 @@ class ApplicationSolaire(ctk.CTk):
         cadre.grid_columnconfigure(0, weight=1)
 
         etiquette_titre = ctk.CTkLabel(
-            cadre,
-            text=titre,
-            font=ctk.CTkFont(size=14, weight="bold"),
+            cadre, text=titre, font=ctk.CTkFont(size=14, weight="bold"),
         )
         etiquette_titre.grid(row=0, column=0, sticky="w", padx=14, pady=(10, 2))
 
         etiquette_valeur = ctk.CTkLabel(
-            cadre,
-            text=valeur,
+            cadre, text=valeur,
             font=ctk.CTkFont(size=22 if not petite_valeur else 14, weight="bold"),
-            wraplength=360,
-            justify="left",
+            wraplength=360, justify="left",
         )
         etiquette_valeur.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 10))
 
@@ -1347,9 +1301,7 @@ class ApplicationSolaire(ctk.CTk):
         lignes: list[tuple[str, str]],
     ) -> None:
         carte = ctk.CTkFrame(
-            parent,
-            corner_radius=18,
-            fg_color=self.couleurs_resultats["surface"],
+            parent, corner_radius=18, fg_color=self.couleurs_resultats["surface"],
         )
         carte.grid(row=0, column=colonne, sticky="ew", padx=6, pady=6)
         carte.grid_columnconfigure(0, weight=1)
@@ -1359,37 +1311,26 @@ class ApplicationSolaire(ctk.CTk):
         entete.grid_columnconfigure(0, weight=1)
 
         titre_carte = ctk.CTkLabel(
-            entete,
-            text=titre,
-            font=ctk.CTkFont(size=15, weight="bold"),
+            entete, text=titre, font=ctk.CTkFont(size=15, weight="bold"),
         )
         titre_carte.grid(row=0, column=0, sticky="w", padx=12, pady=8)
 
         for index, (libelle, valeur) in enumerate(lignes, start=1):
             ligne_cadre = ctk.CTkFrame(
-                carte,
-                corner_radius=12,
-                fg_color=self.couleurs_resultats["surface_alt"],
+                carte, corner_radius=12, fg_color=self.couleurs_resultats["surface_alt"],
             )
             ligne_cadre.grid(row=index, column=0, sticky="ew", padx=12, pady=4)
             ligne_cadre.grid_columnconfigure(0, weight=1)
 
-            etiquette_libelle = ctk.CTkLabel(
-                ligne_cadre,
-                text=libelle,
-                font=ctk.CTkFont(size=13, weight="bold"),
-            )
-            etiquette_libelle.grid(row=0, column=0, sticky="w", padx=12, pady=8)
+            ctk.CTkLabel(
+                ligne_cadre, text=libelle, font=ctk.CTkFont(size=13, weight="bold"),
+            ).grid(row=0, column=0, sticky="w", padx=12, pady=8)
 
-            etiquette_valeur = ctk.CTkLabel(
-                ligne_cadre,
-                text=valeur,
-                justify="right",
-                wraplength=300,
+            ctk.CTkLabel(
+                ligne_cadre, text=valeur, justify="right", wraplength=300,
                 text_color=self.couleurs_resultats["text_dim"],
                 font=ctk.CTkFont(size=13),
-            )
-            etiquette_valeur.grid(row=0, column=1, sticky="e", padx=12, pady=8)
+            ).grid(row=0, column=1, sticky="e", padx=12, pady=8)
 
     def _creer_carte_resultat_surplus(
         self,
@@ -1400,9 +1341,7 @@ class ApplicationSolaire(ctk.CTk):
         lignes: list[tuple[str, str]],
     ) -> None:
         carte = ctk.CTkFrame(
-            parent,
-            corner_radius=16,
-            fg_color=self.couleurs_resultats["surface_alt"],
+            parent, corner_radius=16, fg_color=self.couleurs_resultats["surface_alt"],
         )
         carte.grid(row=ligne, column=0, sticky="ew", padx=12, pady=5)
         carte.grid_columnconfigure(0, weight=1)
@@ -1411,38 +1350,52 @@ class ApplicationSolaire(ctk.CTk):
         entete.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 6))
         entete.grid_columnconfigure(0, weight=1)
 
-        titre_carte = ctk.CTkLabel(
-            entete,
-            text=titre,
-            font=ctk.CTkFont(size=15, weight="bold"),
-        )
-        titre_carte.grid(row=0, column=0, sticky="w", padx=12, pady=8)
+        ctk.CTkLabel(
+            entete, text=titre, font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=8)
 
         for index, (libelle, valeur) in enumerate(lignes, start=1):
             ligne_cadre = ctk.CTkFrame(
-                carte,
-                corner_radius=12,
-                fg_color=self.couleurs_resultats["surface_alt"],
+                carte, corner_radius=12, fg_color=self.couleurs_resultats["surface_alt"],
             )
             ligne_cadre.grid(row=index, column=0, sticky="ew", padx=12, pady=4)
             ligne_cadre.grid_columnconfigure(0, weight=1)
 
-            etiquette_libelle = ctk.CTkLabel(
-                ligne_cadre,
-                text=libelle,
-                font=ctk.CTkFont(size=13, weight="bold"),
-            )
-            etiquette_libelle.grid(row=0, column=0, sticky="w", padx=12, pady=8)
+            ctk.CTkLabel(
+                ligne_cadre, text=libelle, font=ctk.CTkFont(size=13, weight="bold"),
+            ).grid(row=0, column=0, sticky="w", padx=12, pady=8)
 
-            etiquette_valeur = ctk.CTkLabel(
-                ligne_cadre,
-                text=valeur,
-                justify="right",
-                wraplength=300,
+            ctk.CTkLabel(
+                ligne_cadre, text=valeur, justify="right", wraplength=300,
                 text_color=self.couleurs_resultats["text_dim"],
                 font=ctk.CTkFont(size=13),
-            )
-            etiquette_valeur.grid(row=0, column=1, sticky="e", padx=12, pady=8)
+            ).grid(row=0, column=1, sticky="e", padx=12, pady=8)
+
+    def _creer_bandeau_resultat(
+        self,
+        ligne: int,
+        titre: str,
+        valeur: str,
+        description: str,
+        couleur: str,
+    ) -> None:
+        cadre = ctk.CTkFrame(
+            self.zone_resultats, corner_radius=18, fg_color=couleur,
+        )
+        cadre.grid(row=ligne, column=0, sticky="ew", padx=4, pady=(4, 10))
+        cadre.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            cadre, text=titre, font=ctk.CTkFont(size=16, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 4))
+
+        ctk.CTkLabel(
+            cadre, text=valeur, font=ctk.CTkFont(size=30, weight="bold"),
+        ).grid(row=1, column=0, sticky="w", padx=18, pady=4)
+
+        ctk.CTkLabel(cadre, text=description, justify="left").grid(
+            row=2, column=0, sticky="w", padx=18, pady=(0, 16)
+        )
 
     def tester_connexion_base(self) -> None:
         try:

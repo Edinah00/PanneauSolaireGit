@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from math import ceil
 
 from calcul_metier import (
     calculer_energie_non_utilisee_wh,
@@ -129,7 +130,6 @@ class ControleurApplication:
         )
         self.appareils.append(appareil)
         self._synchroniser_appareils(parametres)
-
         return appareil
 
     def modifier_appareil(
@@ -283,7 +283,7 @@ class ControleurApplication:
         puissance_requise: float,
         parametres: ParametresTranches,
     ) -> tuple[float, float, float, int]:
-        """Calcule la puissance theorique, pratique, le prix et le nombre de panneaux.
+        """Calcule la puissance theorique, pratique, le prix et le nombre de panneaux (arrondi).
 
         La puissance theorique correspond au besoin issu du calcul global.
         La puissance pratique applique ensuite le rendement du panneau choisi.
@@ -298,8 +298,6 @@ class ControleurApplication:
         nombre_panneaux = 0
         prix_total = 0.0
         if panneau.energie_unitaire_wh > 0:
-            from math import ceil
-
             nombre_panneaux = max(
                 0,
                 ceil(puissance_pratique / panneau.energie_unitaire_wh),
@@ -309,6 +307,23 @@ class ControleurApplication:
             prix_total = nombre_panneaux * panneau.prix_unitaire
 
         return puissance_theorique, puissance_pratique, prix_total, nombre_panneaux
+
+    def calculer_nombre_panneaux_reel(
+        self,
+        panneau: PanneauSolaire,
+        puissance_requise: float,
+    ) -> float:
+        """Retourne le nombre réel de panneaux (sans arrondi) nécessaires.
+
+        Formule : nb_reel = (puissance_requise / pourcentage) / energie_unitaire_wh
+        Ex: puissance_requise=2960W, pourcentage=0.4, energie_unitaire=300Wh
+            -> pratique = 2960/0.4 = 7400W
+            -> nb_reel  = 7400/300  = 24.67  (on garde 24.67, pas 25)
+        """
+        if panneau.energie_unitaire_wh <= 0 or panneau.pourcentage <= 0:
+            return 0.0
+        puissance_pratique = puissance_requise / panneau.pourcentage
+        return puissance_pratique / panneau.energie_unitaire_wh
 
     def trouver_meilleur_panneau(
         self,
@@ -339,13 +354,31 @@ class ControleurApplication:
         puissance_requise: float,
         parametres: ParametresTranches,
     ) -> ResultatVente:
+        """Calcule la revente en utilisant le nombre ARRONDI de panneaux achetés.
+
+        Exemple : nb réel = 9,86 → on achète 10 panneaux (arrondi).
+        La puissance installée est donc celle de 10 panneaux, pas 9,86.
+        Le surplus vient du fait que 10 panneaux produisent plus que nécessaire.
+
+        Puissance pratique installée  = nb_arrondi × energie_unitaire_wh
+        Puissance théorique installée = puissance_pratique_installee × pourcentage
+        C'est cette puissance théorique installée qui génère le surplus.
+        """
         resultat_dimensionnement = calculer_resultats(self.appareils, parametres)
-        puissance_theorique, puissance_pratique, _, _ = self.calculer_puissance_panneau(
-            panneau, puissance_requise, parametres
-        )
+
+        # Nombre réel (float) et arrondi (int, ce qu'on achète vraiment)
+        nombre_reel = self.calculer_nombre_panneaux_reel(panneau, puissance_requise)
+        nombre_arrondi = ceil(nombre_reel) if nombre_reel > 0 else 0
+        if nombre_arrondi < 1 and puissance_requise > 0:
+            nombre_arrondi = 1
+
+        # Puissance réellement installée = celle des panneaux achetés (arrondi)
+        puissance_pratique_installee = nombre_arrondi * panneau.energie_unitaire_wh
+        puissance_theorique_installee = puissance_pratique_installee * panneau.pourcentage
+
         energie_non_utilisee_wh = calculer_energie_non_utilisee_wh(
             self.appareils,
-            puissance_theorique,
+            puissance_theorique_installee,
             parametres,
             resultat_dimensionnement.puissance_charge_batterie_w,
         )
@@ -357,7 +390,7 @@ class ControleurApplication:
         )
         return ResultatVente(
             nom_panneau=panneau.nom,
-            puissance_panneau_theorique_w=puissance_theorique,
+            puissance_panneau_theorique_w=puissance_theorique_installee,
             energie_non_utilisee_wh=energie_non_utilisee_wh,
             prix_vente_jour_ouvrable_ar_wh=parametres.prix_vente_jour_ouvrable_ar_wh,
             prix_vente_weekend_ar_wh=parametres.prix_vente_weekend_ar_wh,
@@ -365,7 +398,10 @@ class ControleurApplication:
             revenu_weekend_ar=revenu_weekend,
             details={
                 "puissance_requise_w": puissance_requise,
-                "puissance_panneau_pratique_w": puissance_pratique,
+                "nombre_panneaux_reel": nombre_reel,
+                "nombre_panneaux_arrondi": nombre_arrondi,
+                "puissance_panneau_pratique_installee_w": puissance_pratique_installee,
+                "puissance_panneau_theorique_requise_w": puissance_requise,
             },
         )
 
@@ -375,6 +411,10 @@ class ControleurApplication:
         rendement_pourcent: str,
         parametres: ParametresTranches,
     ) -> ResultatVente:
+        """Calcule la revente selon un rendement saisi manuellement (onglet Revente).
+
+        Ici, pas de panneau sélectionné : on utilise la puissance requise telle quelle.
+        """
         resultat_dimensionnement = calculer_resultats(self.appareils, parametres)
         rendement = convertir_nombre(rendement_pourcent, "Rendement panneau") / 100
         if rendement <= 0:
